@@ -1,0 +1,119 @@
+#!/usr/bin/env python
+"""Status-line command for Claude Code.
+
+Reads the JSON session payload from stdin and writes a one-line status to
+stdout. Output format:
+
+    <current-working-directory>  [<N>% of <size> ctx]
+
+If the context-window size is unavailable, <size> is shown as '??'".
+"""
+
+# Example JSON received by this script:
+#
+# {
+#   "session_id": "b86910f6-829f-4b54-a2e1-acf001fb874d",
+#   "transcript_path": "C:\\Users\\flitt\\.claude\\projects\\C--franl\\b86910f6-829f-4b54-a2e1-acf001fb874d.jsonl",
+#   "cwd": "C:\\franl",
+#   "model": {
+#     "id": "claude-opus-4-7",
+#     "display_name": "Opus 4.7"
+#   },
+#   "workspace": {
+#     "current_dir": "C:\\franl",
+#     "project_dir": "C:\\franl",
+#     "added_dirs": [
+#       "C:\\temp",
+#       "C:\\apps",
+#       "C:\\Users\\flitt"
+#     ]
+#   },
+#   "version": "2.1.114",
+#   "output_style": {
+#     "name": "default"
+#   },
+#   "cost": {
+#     "total_cost_usd": 0,
+#     "total_duration_ms": 1159,
+#     "total_api_duration_ms": 0,
+#     "total_lines_added": 0,
+#     "total_lines_removed": 0
+#   },
+#   "context_window": {
+#     "total_input_tokens": 0,
+#     "total_output_tokens": 0,
+#     "context_window_size": 200000,
+#     "current_usage": null,
+#     "used_percentage": null,
+#     "remaining_percentage": null
+#   },
+#   "exceeds_200k_tokens": false
+# }
+
+import json
+import os
+import subprocess
+import sys
+
+
+def fmt_size(size):
+    # Format a token count such as 200000 as "200k" or 1000000 as "1M". We
+    # only collapse to the compact form when the size is an exact multiple of
+    # the corresponding power of ten, so unusual sizes remain unambiguous.
+    if size is None:
+        return ""
+    if size >= 1_000_000 and size % 1_000_000 == 0:
+        return f"{size // 1_000_000}M"
+    if size >= 1_000 and size % 1_000 == 0:
+        return f"{size // 1_000}k"
+    return str(size)
+
+
+def main():
+    # Parse the session JSON that Claude Code writes to our stdin. We fall
+    # back to an empty dict on a parse error so the script still produces a
+    # usable (if minimal) status line rather than raising.
+    try:
+        data = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        data = {}
+
+    # Write data to C:/temp/claude-statusline-debug.json for debugging.
+    with open("C:/temp/claude-statusline-debug.json", "w") as f:
+        json.dump(data, f, indent=2)
+
+    # Get the model identifier.
+    model = data.get("model", {}).get("display_name", "<unknown model>")
+
+    # The current working directory is delivered in Windows form. It may be
+    # missing entirely on the very first status-line refresh of a session.
+    win_cwd = data.get("workspace", {}).get("current_dir", "")
+
+    cwd = win_cwd if win_cwd else os.getcwd()
+
+    # Precomputed percentage of the context window consumed. Null before the
+    # first API response.
+    used_pct = data.get("context_window", {}).get("used_percentage")
+
+    # Total context-window size in tokens, typically 200000 but 1000000 for
+    # models with extended context. Null before the first API response.
+    ctx_size = data.get("context_window", {}).get("context_window_size")
+
+    # Build the bracketed context portion. The context-window size is only
+    # shown when both the percentage and the size are known; otherwise we
+    # fall back to the shorter "[<N>% ctx]" form or omit the segment entirely.
+    size_str = fmt_size(ctx_size)
+    if used_pct is not None and size_str:
+        pct = int(round(used_pct))
+        ctx_part = f"[{pct}% of {size_str} ctx]"
+    elif used_pct is not None:
+        pct = int(round(used_pct))
+        ctx_part = f"[{pct}% of ?? ctx]"
+    else:
+        ctx_part = "[0% of ?? ctx]"
+
+    sys.stdout.write(cwd + "  " + ctx_part + "  " + model)
+
+
+if __name__ == "__main__":
+    main()
